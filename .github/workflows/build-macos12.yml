@@ -1,0 +1,186 @@
+name: release macOS 12.4 compatibility
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - 'patches/macos12/VERSION'
+      - '.github/workflows/build-macos12.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build-release:
+    name: build and release Monterey arm64
+    runs-on: macos-14
+    env:
+      RID: osx-arm64
+      CORE_ARCH: macos-arm64
+      MIN_MACOS: '12.4'
+      OUTPUT: ${{ github.workspace }}/out-macos12-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Read patch version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < patches/macos12/VERSION)"
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.1xx
+
+      - name: Build current v2rayN source against pinned .NET 8 runtime
+        shell: bash
+        working-directory: ./v2rayN
+        run: |
+          set -euo pipefail
+          dotnet publish ./v2rayN.Desktop/v2rayN.Desktop.csproj \
+            -c Release \
+            -r "$RID" \
+            -p:SelfContained=true \
+            -p:LegacyMacOS=true \
+            -o "$OUTPUT"
+
+          dotnet publish ./AmazTool/AmazTool.csproj \
+            -c Release \
+            -r "$RID" \
+            -p:SelfContained=true \
+            -p:PublishTrimmed=true \
+            -p:LegacyMacOS=true \
+            -o "$OUTPUT"
+
+          find "$OUTPUT" -type f -name '*.pdb' -delete
+
+      - name: Install packaging tools
+        shell: bash
+        run: brew install create-dmg p7zip wget
+
+      - name: Package app for macOS 12.4
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod 755 package-osx.sh
+          ./package-osx.sh "$CORE_ARCH" "$OUTPUT" "${{ steps.version.outputs.version }}" "$MIN_MACOS"
+
+      - name: Verify plist and Mach-O deployment targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="v2rayN-Package-${CORE_ARCH}/v2rayN.app"
+
+          PLIST_MIN="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist")"
+          if [[ "$PLIST_MIN" != "$MIN_MACOS" ]]; then
+            echo "Info.plist minimum is $PLIST_MIN, expected $MIN_MACOS"
+            exit 1
+          fi
+
+          failed=0
+          while IFS= read -r -d '' file_path; do
+            if ! file "$file_path" | grep -q 'Mach-O'; then
+              continue
+            fi
+
+            mins="$(otool -l "$file_path" 2>/dev/null | awk '
+              /cmd LC_BUILD_VERSION/ { mode="build"; next }
+              /cmd LC_VERSION_MIN_MACOSX/ { mode="legacy"; next }
+              mode=="build" && $1=="minos" { print $2; mode=""; next }
+              mode=="legacy" && $1=="version" { print $2; mode=""; next }
+            ')"
+
+            if [[ -z "$mins" ]]; then
+              echo "WARN: no macOS deployment target found: $file_path"
+              continue
+            fi
+
+            while IFS= read -r minos; do
+              [[ -z "$minos" ]] && continue
+              echo "$file_path -> minOS $minos"
+              if ! python3 - "$minos" "$MIN_MACOS" <<'PY'
+import sys
+
+def ver(s):
+    parts = s.split('.')
+    return tuple(int(p) for p in (parts + ['0', '0'])[:3])
+
+actual = ver(sys.argv[1])
+limit = ver(sys.argv[2])
+sys.exit(0 if actual <= limit else 1)
+PY
+              then
+                echo "ERROR: $file_path requires macOS $minos (> $MIN_MACOS)"
+                failed=1
+              fi
+            done <<< "$mins"
+          done < <(find "$APP/Contents/MacOS" -type f -print0)
+
+          exit "$failed"
+
+      - name: Prepare release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="v2rayN-Package-${CORE_ARCH}/v2rayN.app"
+          mv "v2rayN-${CORE_ARCH}.dmg" "v2rayN-macos12-arm64.dmg"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "v2rayN-macos12-arm64.zip"
+          shasum -a 256 v2rayN-macos12-arm64.dmg v2rayN-macos12-arm64.zip > SHA256SUMS-macos12.txt
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: v2rayN-macos12-arm64-${{ steps.version.outputs.version }}
+          path: |
+            v2rayN-macos12-arm64.dmg
+            v2rayN-macos12-arm64.zip
+            SHA256SUMS-macos12.txt
+          if-no-files-found: error
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NOTES=$(cat <<'EOF'
+          Monterey compatibility build for Apple Silicon Macs.
+
+          Target: macOS 12.4+ / arm64.
+          UI/app source: current fork source, compiled with LegacyMacOS=true.
+          Runtime: self-contained .NET 8.0.8 compatibility runtime.
+          Packaging gate: every bundled Mach-O file is checked and the release fails if it declares minOS newer than 12.4.
+
+          This is an unsupported compatibility fork of upstream v2rayN, intended for the owner's older Monterey machine. Gatekeeper may require opening the app via Finder's Open command because the package is not Apple-notarized.
+          EOF
+          )
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              v2rayN-macos12-arm64.dmg \
+              v2rayN-macos12-arm64.zip \
+              SHA256SUMS-macos12.txt \
+              --clobber
+          else
+            gh release create "$TAG" \
+              v2rayN-macos12-arm64.dmg \
+              v2rayN-macos12-arm64.zip \
+              SHA256SUMS-macos12.txt \
+              --target "$GITHUB_SHA" \
+              --title "v2rayN $TAG (macOS 12.4 arm64)" \
+              --notes "$NOTES"
+          fi
