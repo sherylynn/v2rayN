@@ -124,3 +124,10 @@ patch(
     new_compare,
     "net8 prerelease version splitting",
 )
+
+patch(
+    "v2rayN/v2rayN.Desktop/Manager/WindowDialog.cs",
+    "            var activeTopmost = openWindows.Reverse().FirstOrDefault(w => w.IsActive);",
+    "            var activeTopmost = openWindows.LastOrDefault(w => w.IsActive);",
+    "avoid Span.Reverse binding on net8",
+)
