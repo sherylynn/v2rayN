@@ -193,12 +193,13 @@ jobs:
               failed=1
             fi
 
-            mins="$(otool -l "$file_path" 2>/dev/null | awk '
+            load_commands="$(otool -l "$file_path" 2>/dev/null)"
+            mins="$(awk '
               /cmd LC_BUILD_VERSION/ { mode="build"; next }
               /cmd LC_VERSION_MIN_MACOSX/ { mode="legacy"; next }
               mode=="build" && $1=="minos" { print $2; mode=""; next }
               mode=="legacy" && $1=="version" { print $2; mode=""; next }
-            ')"
+            ' <<< "$load_commands")"
 
             if [[ -z "$mins" ]]; then
               echo "WARN: no macOS deployment target found: $file_path"
@@ -213,7 +214,21 @@ jobs:
               done <<< "$mins"
             fi
 
+            # otool -L reports a dylib's own LC_ID_DYLIB alongside its actual
+            # dependencies. An install ID may look like /usr/local/... even
+            # though no external file is loaded from that path. Exclude only
+            # exact self IDs; continue rejecting real Homebrew/local linkage.
+            own_ids="$(awk '
+              /cmd LC_ID_DYLIB/ { mode="id"; next }
+              mode=="id" && $1=="name" { print $2; mode=""; next }
+            ' <<< "$load_commands")"
+
             while IFS= read -r dependency; do
+              [[ -z "$dependency" ]] && continue
+              if [[ -n "$own_ids" ]] && grep -Fxq "$dependency" <<< "$own_ids"; then
+                echo "$file_path -> install ID $dependency"
+                continue
+              fi
               case "$dependency" in
                 /opt/homebrew/*|/usr/local/*|/Library/Frameworks/*)
                   echo "ERROR: non-system external dependency: $file_path -> $dependency"
@@ -267,7 +282,7 @@ jobs:
 
           Safety invariants:
           - Every bundled Mach-O must contain arm64 and declare minOS <= 12.4.
-          - Homebrew/local external dylib dependencies are rejected.
+          - Homebrew/local external dylib dependencies are rejected while a dylib's own install ID is ignored.
           - SQLite receives an in-memory create/write/FTS5 smoke test.
           - Xray, sing-box and mihomo must execute their version command successfully.
           - The app is ad-hoc signed after native binaries are replaced.
