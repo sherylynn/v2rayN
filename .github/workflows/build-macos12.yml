@@ -45,6 +45,13 @@ jobs:
         with:
           dotnet-version: 10.0.1xx
 
+      - name: Patch GlobalHotKeys target for legacy build
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOTKEY_PROJECT="v2rayN/GlobalHotKeys/src/GlobalHotKeys/GlobalHotKeys.csproj"
+          python3 -c 'from pathlib import Path; p=Path(__import__("sys").argv[1]); s=p.read_text(encoding="utf-8-sig"); old="<TargetFramework>net10.0</TargetFramework>"; new="<TargetFramework>net8.0</TargetFramework>"; assert old in s, "GlobalHotKeys target changed upstream; review legacy patch"; p.write_text(s.replace(old,new),encoding="utf-8")' "$HOTKEY_PROJECT"
+
       - name: Build current v2rayN source against pinned .NET 8 runtime
         shell: bash
         working-directory: ./v2rayN
