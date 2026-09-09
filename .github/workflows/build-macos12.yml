@@ -7,6 +7,7 @@ on:
       - master
     paths:
       - 'patches/macos12/VERSION'
+      - 'patches/macos12/prepare_legacy_source.py'
       - '.github/workflows/build-macos12.yml'
 
 permissions:
@@ -40,17 +41,14 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Setup .NET 10 SDK
+      - name: Setup .NET 10 SDK and C# 14 compiler
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.1xx
 
-      - name: Patch GlobalHotKeys target for legacy build
+      - name: Apply Monterey source compatibility patch
         shell: bash
-        run: |
-          set -euo pipefail
-          HOTKEY_PROJECT="v2rayN/GlobalHotKeys/src/GlobalHotKeys/GlobalHotKeys.csproj"
-          python3 -c 'from pathlib import Path; p=Path(__import__("sys").argv[1]); s=p.read_text(encoding="utf-8-sig"); old="<TargetFramework>net10.0</TargetFramework>"; new="<TargetFramework>net8.0</TargetFramework>"; assert old in s, "GlobalHotKeys target changed upstream; review legacy patch"; p.write_text(s.replace(old,new),encoding="utf-8")' "$HOTKEY_PROJECT"
+        run: python3 patches/macos12/prepare_legacy_source.py
 
       - name: Build current v2rayN source against pinned .NET 8 runtime
         shell: bash
@@ -157,8 +155,8 @@ jobs:
           Monterey compatibility build for Apple Silicon Macs.
 
           Target: macOS 12.4+ / arm64.
-          UI/app source: current fork source, compiled with LegacyMacOS=true.
-          Runtime: self-contained .NET 8.0.8 compatibility runtime.
+          UI/app source: current fork source with a small reproducible compatibility patch.
+          Compiler/runtime: C# 14 compiler with self-contained .NET 8.0.8 runtime.
           Packaging gate: every bundled Mach-O file is checked and the release fails if it declares minOS newer than 12.4.
 
           This is an unsupported compatibility fork of upstream v2rayN, intended for the owner's older Monterey machine. Gatekeeper may require opening the app via Finder's Open command because the package is not Apple-notarized.
