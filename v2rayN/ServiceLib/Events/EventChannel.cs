@@ -3,7 +3,13 @@ namespace ServiceLib.Events;
 public sealed class EventChannel<T>
 {
     private readonly Signal<T> _signal = new();
+#if NET9_0_OR_GREATER
     private readonly Lock _gate = new();
+#else
+    // System.Threading.Lock was introduced after .NET 8. A plain monitor object
+    // preserves the same synchronization semantics for the Monterey build.
+    private readonly object _gate = new();
+#endif
     private readonly IObservable<T> _observable;
 
     public EventChannel()
