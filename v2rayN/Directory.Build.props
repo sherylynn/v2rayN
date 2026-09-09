@@ -11,12 +11,13 @@
           .NET 8.0.8 is intentionally pinned because it predates macOS 12 EOL and
           still carries a runtime built for Monterey-era deployment targets.
 
-          Current v2rayN source uses C# 13 partial properties. The .NET 10 SDK in
-          CI supplies the C# 13 compiler even when the resulting app targets net8.0.
+          Current v2rayN source and ReactiveUI generators use C# 14 property
+          semantics. The .NET 10 SDK in CI supplies that compiler even when the
+          resulting self-contained app targets the net8.0 runtime.
         -->
         <TargetFramework Condition="'$(LegacyMacOS)' != 'true'">net10.0</TargetFramework>
         <TargetFramework Condition="'$(LegacyMacOS)' == 'true'">net8.0</TargetFramework>
-        <LangVersion Condition="'$(LegacyMacOS)' == 'true'">13.0</LangVersion>
+        <LangVersion Condition="'$(LegacyMacOS)' == 'true'">14.0</LangVersion>
         <TargetLatestRuntimePatch Condition="'$(LegacyMacOS)' != 'true'">true</TargetLatestRuntimePatch>
         <TargetLatestRuntimePatch Condition="'$(LegacyMacOS)' == 'true'">false</TargetLatestRuntimePatch>
         <RuntimeFrameworkVersion Condition="'$(LegacyMacOS)' == 'true'">8.0.8</RuntimeFrameworkVersion>
