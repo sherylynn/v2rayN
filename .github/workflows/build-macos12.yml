@@ -269,28 +269,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          NOTES=$(cat <<EOF2
-          Monterey compatibility build for Apple Silicon Macs.
-
-          Target: macOS 12.4+ / arm64.
-          UI/app source: current fork source with a reproducible net8 compatibility patch.
-          Compiler/runtime: C# 14 compiler with self-contained .NET 8.0.8 runtime.
-          Native SQLite: ${SQLITE_VERSION}, rebuilt from upstream amalgamation for Monterey.
-          Xray: ${XRAY_TAG}, rebuilt from source with Go 1.26.
-          sing-box: ${SING_BOX_TAG}, rebuilt from source with Go 1.26 using upstream non-cgo release tags.
-          mihomo: bundled upstream binary, accepted only after the same Mach-O deployment gate.
-
-          Safety invariants:
-          - Every bundled Mach-O must contain arm64 and declare minOS <= 12.4.
-          - Homebrew/local external dylib dependencies are rejected while a dylib's own install ID is ignored.
-          - SQLite receives an in-memory create/write/FTS5 smoke test.
-          - Xray, sing-box and mihomo must execute their version command successfully.
-          - The app is ad-hoc signed after native binaries are replaced.
-          - v2rayN self-update and native-core update are disabled in this Monterey build so an unvalidated future macOS 13+ binary cannot overwrite the compatible set. Subscription, geo/routing data and normal profile operations remain available.
-
-          The package is not Apple-notarized. On first launch Gatekeeper may still require Finder -> Open.
-          EOF2
-          )
+          {
+            printf '%s\n' 'Monterey compatibility build for Apple Silicon Macs.'
+            printf '\n'
+            printf '%s\n' 'Target: macOS 12.4+ / arm64.'
+            printf '%s\n' 'UI/app source: current fork source with a reproducible net8 compatibility patch.'
+            printf '%s\n' 'Compiler/runtime: C# 14 compiler with self-contained .NET 8.0.8 runtime.'
+            printf 'Native SQLite: %s, rebuilt from upstream amalgamation for Monterey.\n' "$SQLITE_VERSION"
+            printf 'Xray: %s, rebuilt from source with Go 1.26.\n' "$XRAY_TAG"
+            printf 'sing-box: %s, rebuilt from source with Go 1.26 using upstream non-cgo release tags.\n' "$SING_BOX_TAG"
+            printf '%s\n' 'mihomo: bundled upstream binary, accepted only after the same Mach-O deployment gate.'
+            printf '\n'
+            printf '%s\n' 'Safety invariants:'
+            printf '%s\n' '- Every bundled Mach-O must contain arm64 and declare minOS <= 12.4.'
+            printf '%s\n' '- Homebrew/local external dylib dependencies are rejected while a dylib own install ID is ignored.'
+            printf '%s\n' '- SQLite receives an in-memory create/write/FTS5 smoke test.'
+            printf '%s\n' '- Xray, sing-box and mihomo must execute their version command successfully.'
+            printf '%s\n' '- The app is ad-hoc signed after native binaries are replaced.'
+            printf '%s\n' '- v2rayN self-update and native-core update are disabled in this Monterey build so an unvalidated future macOS 13+ binary cannot overwrite the compatible set. Subscription, geo/routing data and normal profile operations remain available.'
+            printf '\n'
+            printf '%s\n' 'The package is not Apple-notarized. On first launch Gatekeeper may still require Finder -> Open.'
+          } > release-notes.txt
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" \
@@ -305,5 +304,5 @@ jobs:
               SHA256SUMS-macos12.txt \
               --target "$GITHUB_SHA" \
               --title "v2rayN $TAG (macOS 12.4 arm64)" \
-              --notes "$NOTES"
+              --notes-file release-notes.txt
           fi
