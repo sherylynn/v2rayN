@@ -111,18 +111,7 @@ jobs:
             while IFS= read -r minos; do
               [[ -z "$minos" ]] && continue
               echo "$file_path -> minOS $minos"
-              if ! python3 - "$minos" "$MIN_MACOS" <<'PY'
-import sys
-
-def ver(s):
-    parts = s.split('.')
-    return tuple(int(p) for p in (parts + ['0', '0'])[:3])
-
-actual = ver(sys.argv[1])
-limit = ver(sys.argv[2])
-sys.exit(0 if actual <= limit else 1)
-PY
-              then
+              if ! python3 -c 'import sys; parse=lambda s: tuple(int(x) for x in (s.split(".")+["0","0"])[:3]); sys.exit(0 if parse(sys.argv[1]) <= parse(sys.argv[2]) else 1)' "$minos" "$MIN_MACOS"; then
                 echo "ERROR: $file_path requires macOS $minos (> $MIN_MACOS)"
                 failed=1
               fi
