@@ -5,8 +5,17 @@
     </PropertyGroup>
 
     <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
-        <TargetLatestRuntimePatch>true</TargetLatestRuntimePatch>
+        <!--
+          The normal upstream build stays on .NET 10.
+          LegacyMacOS=true is used only by our Monterey compatibility workflow.
+          .NET 8.0.8 is intentionally pinned because it predates macOS 12 EOL and
+          still carries a runtime built for Monterey-era deployment targets.
+        -->
+        <TargetFramework Condition="'$(LegacyMacOS)' != 'true'">net10.0</TargetFramework>
+        <TargetFramework Condition="'$(LegacyMacOS)' == 'true'">net8.0</TargetFramework>
+        <TargetLatestRuntimePatch Condition="'$(LegacyMacOS)' != 'true'">true</TargetLatestRuntimePatch>
+        <TargetLatestRuntimePatch Condition="'$(LegacyMacOS)' == 'true'">false</TargetLatestRuntimePatch>
+        <RuntimeFrameworkVersion Condition="'$(LegacyMacOS)' == 'true'">8.0.8</RuntimeFrameworkVersion>
         <CheckForOverflowUnderflow>true</CheckForOverflowUnderflow>
         <Nullable>annotations</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
