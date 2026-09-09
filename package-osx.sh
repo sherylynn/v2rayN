@@ -6,11 +6,20 @@ Arch="$1"
 OutputPath="$2"
 Version="$3"
 MinimumMacOS="${4:-13.6}"
+PostCoreHook="${5:-}"
+AdhocSign="${6:-false}"
 
 FileName="v2rayN-${Arch}.zip"
 wget -nv -O "$FileName" "https://github.com/2dust/v2rayN-core-bin/raw/refs/heads/master/$FileName"
 7z x "$FileName"
 cp -rf "v2rayN-${Arch}"/* "$OutputPath"
+
+# Compatibility builds may replace native dependencies/cores after the common
+# upstream bundle is merged. Normal upstream packaging leaves this unset.
+if [[ -n "$PostCoreHook" ]]; then
+    chmod 755 "$PostCoreHook"
+    "$PostCoreHook" "$OutputPath"
+fi
 
 PackagePath="v2rayN-Package-${Arch}"
 mkdir -p "$PackagePath/v2rayN.app/Contents/Resources"
@@ -19,7 +28,7 @@ cp -f "$PackagePath/v2rayN.app/Contents/MacOS/v2rayN.icns" "$PackagePath/v2rayN.
 echo "When this file exists, app will not store configs under this folder" > "$PackagePath/v2rayN.app/Contents/MacOS/NotStoreConfigHere.txt"
 chmod +x "$PackagePath/v2rayN.app/Contents/MacOS/v2rayN"
 
-cat >"$PackagePath/v2rayN.app/Contents/Info.plist" <<-EOF
+cat >"$PackagePath/v2rayN.app/Contents/Info.plist" <<-EOF2
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -60,7 +69,13 @@ cat >"$PackagePath/v2rayN.app/Contents/Info.plist" <<-EOF
   <string>${MinimumMacOS}</string>
 </dict>
 </plist>
-EOF
+EOF2
+
+if [[ "$AdhocSign" == "true" ]]; then
+    # Ad-hoc signing does not notarize the app, but it gives the finished bundle
+    # a coherent code signature after replacing native binaries.
+    codesign --force --deep --sign - --timestamp=none "$PackagePath/v2rayN.app"
+fi
 
 create-dmg \
     --volname "v2rayN Installer" \

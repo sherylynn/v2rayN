@@ -8,6 +8,10 @@ on:
     paths:
       - 'patches/macos12/VERSION'
       - 'patches/macos12/prepare_legacy_source.py'
+      - 'patches/macos12/prepare_runtime.sh'
+      - 'patches/macos12/runtime-versions.env'
+      - 'package-osx.sh'
+      - 'v2rayN/Directory.Build.props'
       - '.github/workflows/build-macos12.yml'
 
 permissions:
@@ -41,10 +45,27 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Read Monterey runtime versions
+        id: runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          source patches/macos12/runtime-versions.env
+          echo "go_version=$GO_VERSION" >> "$GITHUB_OUTPUT"
+          echo "xray_tag=$XRAY_TAG" >> "$GITHUB_OUTPUT"
+          echo "sing_box_tag=$SING_BOX_TAG" >> "$GITHUB_OUTPUT"
+          echo "sqlite_version=$SQLITE_VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Setup .NET 10 SDK and C# 14 compiler
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.1xx
+
+      - name: Setup last Go toolchain supporting Monterey
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.runtime.outputs.go_version }}
+          cache: false
 
       - name: Apply Monterey source compatibility patch
         shell: bash
@@ -76,29 +97,100 @@ jobs:
         shell: bash
         run: brew install create-dmg p7zip wget
 
-      - name: Package app for macOS 12.4
+      - name: Package app and rebuild Monterey native runtime
         shell: bash
         run: |
           set -euo pipefail
-          chmod 755 package-osx.sh
-          ./package-osx.sh "$CORE_ARCH" "$OUTPUT" "${{ steps.version.outputs.version }}" "$MIN_MACOS"
+          chmod 755 package-osx.sh patches/macos12/prepare_runtime.sh
+          ./package-osx.sh \
+            "$CORE_ARCH" \
+            "$OUTPUT" \
+            "${{ steps.version.outputs.version }}" \
+            "$MIN_MACOS" \
+            "patches/macos12/prepare_runtime.sh" \
+            true
 
-      - name: Verify plist and Mach-O deployment targets
+      - name: Verify Monterey runtime, signatures and Mach-O deployment targets
         shell: bash
         run: |
           set -euo pipefail
           APP="v2rayN-Package-${CORE_ARCH}/v2rayN.app"
+          source patches/macos12/runtime-versions.env
 
+          plutil -lint "$APP/Contents/Info.plist"
           PLIST_MIN="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist")"
           if [[ "$PLIST_MIN" != "$MIN_MACOS" ]]; then
             echo "Info.plist minimum is $PLIST_MIN, expected $MIN_MACOS"
             exit 1
           fi
 
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          echo "==> SQLite runtime smoke test"
+          python3 - "$APP/Contents/MacOS/libe_sqlite3.dylib" "$SQLITE_VERSION" <<'PY'
+          import ctypes
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          expected_version = sys.argv[2]
+          lib = ctypes.CDLL(str(path))
+          lib.sqlite3_libversion.restype = ctypes.c_char_p
+          actual_version = lib.sqlite3_libversion().decode()
+          if actual_version != expected_version:
+              raise SystemExit(f"SQLite version mismatch: {actual_version} != {expected_version}")
+
+          db = ctypes.c_void_p()
+          lib.sqlite3_open.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)]
+          lib.sqlite3_open.restype = ctypes.c_int
+          lib.sqlite3_exec.argtypes = [
+              ctypes.c_void_p,
+              ctypes.c_char_p,
+              ctypes.c_void_p,
+              ctypes.c_void_p,
+              ctypes.POINTER(ctypes.c_char_p),
+          ]
+          lib.sqlite3_exec.restype = ctypes.c_int
+          lib.sqlite3_close.argtypes = [ctypes.c_void_p]
+          lib.sqlite3_close.restype = ctypes.c_int
+
+          rc = lib.sqlite3_open(b":memory:", ctypes.byref(db))
+          if rc != 0:
+              raise SystemExit(f"sqlite3_open failed: {rc}")
+          err = ctypes.c_char_p()
+          sql = b"CREATE TABLE t(v TEXT); INSERT INTO t VALUES('ok'); CREATE VIRTUAL TABLE f USING fts5(v); INSERT INTO f VALUES('search');"
+          rc = lib.sqlite3_exec(db, sql, None, None, ctypes.byref(err))
+          if rc != 0:
+              message = err.value.decode() if err.value else "unknown error"
+              raise SystemExit(f"sqlite3_exec failed: {rc}: {message}")
+          if lib.sqlite3_close(db) != 0:
+              raise SystemExit("sqlite3_close failed")
+          print(f"SQLite {actual_version}: open/write/FTS5 smoke test passed")
+          PY
+
+          echo "==> Proxy core smoke tests"
+          XRAY_OUTPUT="$("$APP/Contents/MacOS/bin/xray/xray" version 2>&1)"
+          printf '%s\n' "$XRAY_OUTPUT"
+          grep -Fq "${XRAY_TAG#v}" <<< "$XRAY_OUTPUT"
+
+          SING_BOX_OUTPUT="$("$APP/Contents/MacOS/bin/sing_box/sing-box" version 2>&1)"
+          printf '%s\n' "$SING_BOX_OUTPUT"
+          grep -Fq "${SING_BOX_TAG#v}" <<< "$SING_BOX_OUTPUT"
+
+          "$APP/Contents/MacOS/bin/mihomo/mihomo" -v
+
+          echo "==> Mach-O architecture/deployment/dependency gate"
           failed=0
           while IFS= read -r -d '' file_path; do
-            if ! file "$file_path" | grep -q 'Mach-O'; then
+            description="$(file "$file_path")"
+            if ! grep -q 'Mach-O' <<< "$description"; then
               continue
+            fi
+
+            echo "$description"
+            if ! grep -q 'arm64' <<< "$description"; then
+              echo "ERROR: Mach-O file has no arm64 slice: $file_path"
+              failed=1
             fi
 
             mins="$(otool -l "$file_path" 2>/dev/null | awk '
@@ -110,17 +202,25 @@ jobs:
 
             if [[ -z "$mins" ]]; then
               echo "WARN: no macOS deployment target found: $file_path"
-              continue
+            else
+              while IFS= read -r minos; do
+                [[ -z "$minos" ]] && continue
+                echo "$file_path -> minOS $minos"
+                if ! python3 -c 'import sys; parse=lambda s: tuple(int(x) for x in (s.split(".")+["0","0"])[:3]); sys.exit(0 if parse(sys.argv[1]) <= parse(sys.argv[2]) else 1)' "$minos" "$MIN_MACOS"; then
+                  echo "ERROR: $file_path requires macOS $minos (> $MIN_MACOS)"
+                  failed=1
+                fi
+              done <<< "$mins"
             fi
 
-            while IFS= read -r minos; do
-              [[ -z "$minos" ]] && continue
-              echo "$file_path -> minOS $minos"
-              if ! python3 -c 'import sys; parse=lambda s: tuple(int(x) for x in (s.split(".")+["0","0"])[:3]); sys.exit(0 if parse(sys.argv[1]) <= parse(sys.argv[2]) else 1)' "$minos" "$MIN_MACOS"; then
-                echo "ERROR: $file_path requires macOS $minos (> $MIN_MACOS)"
-                failed=1
-              fi
-            done <<< "$mins"
+            while IFS= read -r dependency; do
+              case "$dependency" in
+                /opt/homebrew/*|/usr/local/*|/Library/Frameworks/*)
+                  echo "ERROR: non-system external dependency: $file_path -> $dependency"
+                  failed=1
+                  ;;
+              esac
+            done < <(otool -L "$file_path" 2>/dev/null | tail -n +2 | awk '{print $1}')
           done < <(find "$APP/Contents/MacOS" -type f -print0)
 
           exit "$failed"
@@ -148,19 +248,33 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
+          XRAY_TAG: ${{ steps.runtime.outputs.xray_tag }}
+          SING_BOX_TAG: ${{ steps.runtime.outputs.sing_box_tag }}
+          SQLITE_VERSION: ${{ steps.runtime.outputs.sqlite_version }}
         shell: bash
         run: |
           set -euo pipefail
-          NOTES=$(cat <<'EOF'
+          NOTES=$(cat <<EOF2
           Monterey compatibility build for Apple Silicon Macs.
 
           Target: macOS 12.4+ / arm64.
-          UI/app source: current fork source with a small reproducible compatibility patch.
+          UI/app source: current fork source with a reproducible net8 compatibility patch.
           Compiler/runtime: C# 14 compiler with self-contained .NET 8.0.8 runtime.
-          Packaging gate: every bundled Mach-O file is checked and the release fails if it declares minOS newer than 12.4.
+          Native SQLite: ${SQLITE_VERSION}, rebuilt from upstream amalgamation for Monterey.
+          Xray: ${XRAY_TAG}, rebuilt from source with Go 1.26.
+          sing-box: ${SING_BOX_TAG}, rebuilt from source with Go 1.26 using upstream non-cgo release tags.
+          mihomo: bundled upstream binary, accepted only after the same Mach-O deployment gate.
 
-          This is an unsupported compatibility fork of upstream v2rayN, intended for the owner's older Monterey machine. Gatekeeper may require opening the app via Finder's Open command because the package is not Apple-notarized.
-          EOF
+          Safety invariants:
+          - Every bundled Mach-O must contain arm64 and declare minOS <= 12.4.
+          - Homebrew/local external dylib dependencies are rejected.
+          - SQLite receives an in-memory create/write/FTS5 smoke test.
+          - Xray, sing-box and mihomo must execute their version command successfully.
+          - The app is ad-hoc signed after native binaries are replaced.
+          - v2rayN self-update and native-core update are disabled in this Monterey build so an unvalidated future macOS 13+ binary cannot overwrite the compatible set. Subscription, geo/routing data and normal profile operations remain available.
+
+          The package is not Apple-notarized. On first launch Gatekeeper may still require Finder -> Open.
+          EOF2
           )
 
           if gh release view "$TAG" >/dev/null 2>&1; then

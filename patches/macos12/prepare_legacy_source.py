@@ -27,6 +27,70 @@ patch(
     "Architecture.RiscV64 is unavailable on net8",
 )
 
+# The compatibility package ships a set of native binaries that were validated as
+# Monterey-compatible by CI. Disable the normal self/core updater so a future
+# upstream binary built for macOS 13+ cannot silently replace them after install.
+old_update_supported = '''    public bool IsCheckUpdateSupported(ECoreType type)
+    {
+        return type switch
+        {
+            ECoreType.v2rayN => !Utils.IsPackagedInstall(),
+            ECoreType.Xray => true,
+            ECoreType.mihomo => true,
+            ECoreType.sing_box => true,
+            _ => false,
+        };
+    }
+'''
+new_update_supported = '''    public bool IsCheckUpdateSupported(ECoreType type)
+    {
+        // Monterey builds receive application/core updates only through this
+        // fork's validated release pipeline. Geo/routing/subscription updates
+        // are separate code paths and remain available.
+        return false;
+    }
+'''
+patch(
+    "v2rayN/ServiceLib/Manager/CoreInfoManager.cs",
+    old_update_supported,
+    new_update_supported,
+    "disable unvalidated app/core updates on Monterey",
+)
+
+patch(
+    "v2rayN/ServiceLib/Services/UpdateService.cs",
+    '''    public async Task CheckUpdateGuiN(bool preRelease, bool blProxy = true)
+    {
+''',
+    '''    public async Task CheckUpdateGuiN(bool preRelease, bool blProxy = true)
+    {
+        if (!CoreInfoManager.Instance.IsCheckUpdateSupported(ECoreType.v2rayN))
+        {
+            await UpdateFunc(false, ResUI.MsgNotSupport);
+            return;
+        }
+
+''',
+    "block direct GUI self-update on Monterey",
+)
+
+patch(
+    "v2rayN/ServiceLib/Services/UpdateService.cs",
+    '''    public async Task CheckUpdateCore(ECoreType type, bool preRelease, bool blProxy = true)
+    {
+''',
+    '''    public async Task CheckUpdateCore(ECoreType type, bool preRelease, bool blProxy = true)
+    {
+        if (!CoreInfoManager.Instance.IsCheckUpdateSupported(type))
+        {
+            await UpdateFunc(false, ResUI.MsgNotSupport);
+            return;
+        }
+
+''',
+    "block direct native-core update on Monterey",
+)
+
 old_compare = '''    private static int ComparePreRelease(string? left, string? right)
     {
         if (string.IsNullOrEmpty(left) && string.IsNullOrEmpty(right))
